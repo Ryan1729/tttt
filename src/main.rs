@@ -53,7 +53,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         tracing::info!("Received Privmsg");
 
                         if let Some(response) = ardly_bot::response(
-                            &message.message_text
+                            message.message_text.clone()
                         ) {
                             let reply_result = client.say_in_reply_to(
                                 &message,
@@ -88,17 +88,24 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod ardly_bot {
     use regex::Regex;
 
-    pub fn response(input: &str) -> Option<String> {
+    pub fn response(mut input: String) -> Option<String> {
+        input.make_ascii_lowercase();
+
         // avoid self replies
         if input.contains("know 'er") {
             return None;
+        }
+
+        if input.contains("liquor")
+        || input.contains("liqueur") {
+            return Some("lick 'er? I 'ardly know 'er!".to_owned());
         }
 
         // TODO make this a lazy static.
         let er_regex = Regex::new(r"(\P{White_Space}+)er(s|ed|ing)?(\p{White_Space}|[\.!?,]|$)").unwrap();
 
         let mut best_word = "";
-        for captures in er_regex.captures_iter(input) {
+        for captures in er_regex.captures_iter(&input) {
             // 0 is the whole match
             let Some(mut erless_word) = captures.get(1).map(|c| c.as_str()) else {
                 continue
@@ -119,8 +126,39 @@ mod ardly_bot {
             return None;
         }
 
-        Some(format!(
-            "{best_word} 'er? I 'ardly know 'er!"
-        ))
+        let mut best_word = best_word.to_owned();
+        
+        if // For example, "collid-er"
+           best_word.ends_with("id")
+        || (
+            // pok-er => poke 'er
+            best_word.ends_with("ok")
+            // but, book-er => book 'er
+            && !best_word.ends_with("ook")
+        )
+        {
+            best_word.push('e');
+        }
+
+        best_word.push_str(" 'er? I 'ardly know 'er!");
+
+        Some(best_word)
+    }
+
+    #[test]
+    fn response_works_on_these_examples() {
+        macro_rules! a {
+            ($input: literal, $expected: expr) => {
+                let expected: Option<&str> = $expected;
+                let expected: Option<String> = expected.map(|s| s.to_owned());
+                assert_eq!(response($input.to_owned()), expected);
+            }
+        }
+        a!("", None);
+        a!("booker", Some("book 'er? I 'ardly know 'er!"));
+        a!("liquor", Some("lick 'er? I 'ardly know 'er!"));
+        a!("Large Hadron Collider", Some("collide 'er? I 'ardly know 'er!"));
+        a!("cupholder", Some("cuphold 'er? I 'ardly know 'er!"));
+        a!("poker", Some("poke 'er? I 'ardly know 'er!"));
     }
 }
