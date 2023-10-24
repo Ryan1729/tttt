@@ -40,23 +40,34 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // otherwise they will back up.
             while let Some(server_message) = incoming_messages.recv().await {
                 use ServerMessage::*;
-                tracing::info!("Received: {server_message:?}");
+
+                match server_message {
+                    Ping(_) | Pong(_) => {
+                        tracing::debug!("Received: {server_message:?}");
+                    }
+                    _ => tracing::info!("Received: {server_message:?}"),
+                }
 
                 match server_message {
                     Privmsg(message) => {
                         tracing::info!("Received Privmsg");
 
-                        let reply_result = client.say_in_reply_to(
-                            &message,
-                            "I saw that!".to_owned()
-                        ).await;
-
-                        if let Err(err) = reply_result {
-                            tracing::error!("say_in_reply_to error: {err}");
-                        } else {
-                            tracing::info!("Replied!");
+                        if let Some(response) = ardly_bot::response(
+                            &message.message_text
+                        ) {
+                            let reply_result = client.say_in_reply_to(
+                                &message,
+                                format!("'ardly-bot sez: {}", &response),
+                            ).await;
+    
+                            if let Err(err) = reply_result {
+                                tracing::error!("say_in_reply_to error: {err}");
+                            } else {
+                                tracing::info!("Replied with \"{response}\"!");
+                            }
                         }
                     }
+                    Ping(_) | Pong(_) => {}
                     _ => {
                         tracing::info!("Unhandled mesage type");
                     }
@@ -72,4 +83,44 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     join_handle.await?;
 
     Ok(())
+}
+
+mod ardly_bot {
+    use regex::Regex;
+
+    pub fn response(input: &str) -> Option<String> {
+        // avoid self replies
+        if input.contains("know 'er") {
+            return None;
+        }
+
+        // TODO make this a lazy static.
+        let er_regex = Regex::new(r"(\P{White_Space}+)er(s|ed|ing)?(\p{White_Space}|[\.!?,]|$)").unwrap();
+
+        let mut best_word = "";
+        for captures in er_regex.captures_iter(input) {
+            // 0 is the whole match
+            let Some(mut erless_word) = captures.get(1).map(|c| c.as_str()) else {
+                continue
+            };
+
+            // This seems easier than changing the regex to handle "ererer"
+            while erless_word.ends_with("er") {
+                erless_word = &erless_word[0..erless_word.len() - 2];
+            }
+
+            // TODO? Better bestness criteria?
+            if best_word.len() <= erless_word.len() {
+                best_word = erless_word;
+            }
+        }
+
+        if best_word.is_empty() {
+            return None;
+        }
+
+        Some(format!(
+            "{best_word} 'er? I 'ardly know 'er!"
+        ))
+    }
 }
