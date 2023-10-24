@@ -1,0 +1,10 @@
+[package]
+name = "ardly-bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+twitch-irc = "5.0.1"
