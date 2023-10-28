@@ -101,6 +101,11 @@ mod ardly_bot {
             return Some("lick 'er? I 'ardly know 'er!".to_owned());
         }
 
+        if input.contains("parappa")
+        || input.contains("rappa") {
+            return Some("Kick, punch, block, it's all in the mind.".to_owned());
+        }
+
         // TODO make this a lazy static.
         let er_regex = Regex::new(r"(\P{White_Space}+)er(s|ed|ing)?(\p{White_Space}|[\.!?,]|$)").unwrap();
 
@@ -126,9 +131,31 @@ mod ardly_bot {
             return None;
         }
 
+        if best_word == "rap" {
+            return Some("No means no.".to_owned());
+        }
+
+        if best_word == "rapp" {
+            return Some("What is this? Friday Night Funkin'?".to_owned());
+        }
+
+        if best_word == "wrapp" {
+            return Some("Like in a blanket? Is she cold?".to_owned());
+        }
+
+        if best_word == "jamm" {
+            return Some("Um Jammer Lammy? My guitar is in my mind!".to_owned());
+        }
+
+        if best_word == "bon" {
+            return Some("I'd rather leave 'er bones where they are.".to_owned());
+        }
+
         let mut best_word = best_word.to_owned();
         
         if // For example, "collid-er"
+           best_word.ends_with("id")
+        || // For example, "bon-er"
            best_word.ends_with("id")
         || (
             // pok-er => poke 'er
@@ -160,5 +187,11 @@ mod ardly_bot {
         a!("Large Hadron Collider", Some("collide 'er? I 'ardly know 'er!"));
         a!("cupholder", Some("cuphold 'er? I 'ardly know 'er!"));
         a!("poker", Some("poke 'er? I 'ardly know 'er!"));
+        a!("hand me the fish boner", Some("I'd rather leave 'er bones where they are."));
+        a!("raper", Some("No means no."));
+        a!("rapper", Some("What is this? Friday Night Funkin'?"));
+        a!("I'm gonna work as a present wrapper", Some("Like in a blanket? Is she cold?"));
+        a!("PaRappa the Rappa", Some("Kick, punch, block, it's all in the mind."));
+        a!("They turned on the radio jammer", Some("Um Jammer Lammy? My guitar is in my mind!"));
     }
 }
