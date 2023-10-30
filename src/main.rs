@@ -12,77 +12,101 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     args.next(); //exe name
 
+    // TODO allow muliple channel names
     let channel_name = args.next()
         .ok_or_else(|| "Channel name is required as first arg")?;
 
     let login_name = args.next()
         .ok_or_else(|| "Login name is required as second arg")?;
 
+    // TODO Once we can get the token ourselves, accept either token, or required info to get token
     let oauth_token = args.next()
         .ok_or_else(|| "OAuth token is required as third arg")?;
 
     tracing_subscriber::fmt::init();
 
-    tracing::info!("Attempting to connect to {channel_name} as {login_name}");
+    struct BotSpec {
+        channel_names: Vec<String>,
+        login_name: String,
+        oauth_token: String,
+    }
 
-    // default configuration is to join chat as anonymous.
-    let config = ClientConfig::new_simple(
-        StaticLoginCredentials::new(login_name, Some(oauth_token))
-    );
-    let (mut incoming_messages, client) =
-        TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
+    async fn start_bot(
+        BotSpec {
+            channel_names,
+            login_name,
+            oauth_token,
+        }: BotSpec
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        tracing::info!("Attempting to connect to {channel_names:?} as {login_name}");
 
-    let join_handle = tokio::spawn({
-        let client = client.clone();
+        // default configuration is to join chat as anonymous.
+        let config = ClientConfig::new_simple(
+            StaticLoginCredentials::new(login_name, Some(oauth_token))
+        );
+        let (mut incoming_messages, client) =
+            TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
 
-        async move {
-            // It is important to be consuming incoming messages,
-            // otherwise they will back up.
-            while let Some(server_message) = incoming_messages.recv().await {
-                use ServerMessage::*;
+        let join_handle = tokio::spawn({
+            let client = client.clone();
 
-                match server_message {
-                    Ping(_) | Pong(_) => {
-                        tracing::debug!("Received: {server_message:?}");
+            async move {
+                // It is important to be consuming incoming messages,
+                // otherwise they will back up.
+                while let Some(server_message) = incoming_messages.recv().await {
+                    use ServerMessage::*;
+
+                    match server_message {
+                        Ping(_) | Pong(_) => {
+                            tracing::debug!("Received: {server_message:?}");
+                        }
+                        _ => tracing::info!("Received: {server_message:?}"),
                     }
-                    _ => tracing::info!("Received: {server_message:?}"),
-                }
 
-                match server_message {
-                    Privmsg(message) => {
-                        tracing::info!("Received Privmsg");
+                    match server_message {
+                        Privmsg(message) => {
+                            tracing::info!("Received Privmsg");
 
-                        if let Some(response) = ardly_bot::response(
-                            message.message_text.clone()
-                        ) {
-                            let reply_result = client.say_in_reply_to(
-                                &message,
-                                format!("'ardly-bot sez: {}", &response),
-                            ).await;
-    
-                            if let Err(err) = reply_result {
-                                tracing::error!("say_in_reply_to error: {err}");
-                            } else {
-                                tracing::info!("Replied with \"{response}\"!");
+                            if let Some(response) = ardly_bot::response(
+                                message.message_text.clone()
+                            ) {
+                                let reply_result = client.say_in_reply_to(
+                                    &message,
+                                    format!("'ardly-bot sez: {}", &response),
+                                ).await;
+
+                                if let Err(err) = reply_result {
+                                    tracing::error!("say_in_reply_to error: {err}");
+                                } else {
+                                    tracing::info!("Replied with \"{response}\"!");
+                                }
                             }
                         }
-                    }
-                    Ping(_) | Pong(_) => {}
-                    _ => {
-                        tracing::info!("Unhandled mesage type");
+                        Ping(_) | Pong(_) => {}
+                        _ => {
+                            tracing::info!("Unhandled mesage type");
+                        }
                     }
                 }
             }
+        });
+
+        for channel_name in channel_names {
+            client.join(channel_name)?;
         }
-    });
 
-    client.join(channel_name)?;
+        // keep the tokio executor alive.
+        // If you return instead of waiting the background task will exit.
+        join_handle.await?;
 
-    // keep the tokio executor alive.
-    // If you return instead of waiting the background task will exit.
-    join_handle.await?;
+        Ok(())
+    }
 
-    Ok(())
+    start_bot(BotSpec {
+        channel_names: vec![channel_name],
+        login_name,
+        oauth_token,
+    }).await
 }
 
 mod ardly_bot {
@@ -152,7 +176,7 @@ mod ardly_bot {
         }
 
         let mut best_word = best_word.to_owned();
-        
+
         if // For example, "collid-er"
            best_word.ends_with("id")
         || // For example, "bon-er"
