@@ -102,6 +102,15 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     }
 
+    // TODO Start webserver in background thread
+    // TODO Have webserver check incoming twitch state and print user token
+    // TODO Have webserver set user token where it can be retrieved in this thread
+    // TODO Sleep until webserver starts up (or maybe just `await`?)
+    // TODO Open twitch authorize URL in web browser, with redirect url to local webserver
+    // TODO Sleep until webserver sets user token
+    // TODO Post to twitch token endpoint with user token
+    // TODO Pass access token from twitch token endpoint response instead of one passed on CLI
+
     start_bot(BotSpec {
         channel_names: vec![channel_name],
         login_name,
