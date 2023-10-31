@@ -6,6 +6,8 @@ use twitch_irc::{
     message::ServerMessage,
 };
 
+use std::net::{SocketAddr, ToSocketAddrs};
+
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args();
@@ -23,99 +25,132 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let oauth_token = args.next()
         .ok_or_else(|| "OAuth token is required as third arg")?;
 
+    let addr = if let Some(addr_str) = args.next() {
+        if let Some(addr) = first_addr(&addr_str) {
+            Some(addr)
+        } else {
+            first_addr((addr_str, 8080))
+        }
+    } else {
+        None
+    };
+
     tracing_subscriber::fmt::init();
 
-    struct BotSpec {
-        channel_names: Vec<String>,
-        login_name: String,
-        oauth_token: String,
-    }
+    if let Some(addr) = addr {
+        use rouille::{start_server, try_or_400, Request, Response};
 
-    async fn start_bot(
-        BotSpec {
-            channel_names,
-            login_name,
-            oauth_token,
-        }: BotSpec
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        tracing::info!("Attempting to connect to {channel_names:?} as {login_name}");
+        tracing::info!("got addr {addr:?}");
 
-        // default configuration is to join chat as anonymous.
-        let config = ClientConfig::new_simple(
-            StaticLoginCredentials::new(login_name, Some(oauth_token))
-        );
-        let (mut incoming_messages, client) =
-            TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
+        // Start webserver in background thread
+        tokio::spawn(async move {
+            tracing::info!("starting server at {addr:?}");
 
-        let join_handle = tokio::spawn({
-            let client = client.clone();
+            start_server(addr, move |request| {
+                tracing::info!("{request:?}");
 
-            async move {
-                // It is important to be consuming incoming messages,
-                // otherwise they will back up.
-                while let Some(server_message) = incoming_messages.recv().await {
-                    use ServerMessage::*;
-
-                    match server_message {
-                        Ping(_) | Pong(_) => {
-                            tracing::debug!("Received: {server_message:?}");
-                        }
-                        _ => tracing::info!("Received: {server_message:?}"),
-                    }
-
-                    match server_message {
-                        Privmsg(message) => {
-                            tracing::info!("Received Privmsg");
-
-                            if let Some(response) = ardly_bot::response(
-                                message.message_text.clone()
-                            ) {
-                                let reply_result = client.say_in_reply_to(
-                                    &message,
-                                    format!("'ardly-bot sez: {}", &response),
-                                ).await;
-
-                                if let Err(err) = reply_result {
-                                    tracing::error!("say_in_reply_to error: {err}");
-                                } else {
-                                    tracing::info!("Replied with \"{response}\"!");
-                                }
-                            }
-                        }
-                        Ping(_) | Pong(_) => {}
-                        _ => {
-                            tracing::info!("Unhandled mesage type");
-                        }
-                    }
-                }
-            }
+                Response::text(format!("{request:?}")).with_status_code(501)
+            })
         });
+    
 
-        for channel_name in channel_names {
-            client.join(channel_name)?;
-        }
-
-        // keep the tokio executor alive.
-        // If you return instead of waiting the background task will exit.
-        join_handle.await?;
-
-        Ok(())
+        // TODO Have webserver check incoming twitch state and print user token
+        // TODO Have webserver set user token where it can be retrieved in this thread
+        // TODO Sleep until webserver starts up (or maybe just `await`?)
+        // TODO Open twitch authorize URL in web browser, with redirect url to local webserver
+        // TODO Sleep until webserver sets user token
+        // TODO Post to twitch token endpoint with user token
+        // TODO Pass access token from twitch token endpoint response instead of one passed on CLI
+    } else {
+        tracing::info!("Got no server address. Not starting auth server.");
     }
-
-    // TODO Start webserver in background thread
-    // TODO Have webserver check incoming twitch state and print user token
-    // TODO Have webserver set user token where it can be retrieved in this thread
-    // TODO Sleep until webserver starts up (or maybe just `await`?)
-    // TODO Open twitch authorize URL in web browser, with redirect url to local webserver
-    // TODO Sleep until webserver sets user token
-    // TODO Post to twitch token endpoint with user token
-    // TODO Pass access token from twitch token endpoint response instead of one passed on CLI
 
     start_bot(BotSpec {
         channel_names: vec![channel_name],
         login_name,
         oauth_token,
     }).await
+}
+
+struct BotSpec {
+    channel_names: Vec<String>,
+    login_name: String,
+    oauth_token: String,
+}
+
+async fn start_bot(
+    BotSpec {
+        channel_names,
+        login_name,
+        oauth_token,
+    }: BotSpec
+) -> Result<(), Box<dyn std::error::Error>> {
+    tracing::info!("Attempting to connect to {channel_names:?} as {login_name}");
+
+    // default configuration is to join chat as anonymous.
+    let config = ClientConfig::new_simple(
+        StaticLoginCredentials::new(login_name, Some(oauth_token))
+    );
+    let (mut incoming_messages, client) =
+        TwitchIRCClient::<SecureTCPTransport, StaticLoginCredentials>::new(config);
+
+    let join_handle = tokio::spawn({
+        let client = client.clone();
+
+        async move {
+            // It is important to be consuming incoming messages,
+            // otherwise they will back up.
+            while let Some(server_message) = incoming_messages.recv().await {
+                use ServerMessage::*;
+
+                match server_message {
+                    Ping(_) | Pong(_) => {
+                        tracing::debug!("Received: {server_message:?}");
+                    }
+                    _ => tracing::info!("Received: {server_message:?}"),
+                }
+
+                match server_message {
+                    Privmsg(message) => {
+                        tracing::info!("Received Privmsg");
+
+                        if let Some(response) = ardly_bot::response(
+                            message.message_text.clone()
+                        ) {
+                            let reply_result = client.say_in_reply_to(
+                                &message,
+                                format!("'ardly-bot sez: {}", &response),
+                            ).await;
+
+                            if let Err(err) = reply_result {
+                                tracing::error!("say_in_reply_to error: {err}");
+                            } else {
+                                tracing::info!("Replied with \"{response}\"!");
+                            }
+                        }
+                    }
+                    Ping(_) | Pong(_) => {}
+                    _ => {
+                        tracing::info!("Unhandled mesage type");
+                    }
+                }
+            }
+        }
+    });
+
+    for channel_name in channel_names {
+        client.join(channel_name)?;
+    }
+
+    // keep the tokio executor alive.
+    // If you return instead of waiting the background task will exit.
+    join_handle.await?;
+
+    Ok(())
+}
+
+fn first_addr(to_addrs: impl ToSocketAddrs) -> Option<SocketAddr> {
+    to_addrs.to_socket_addrs().ok()?.next()
 }
 
 mod ardly_bot {
