@@ -38,25 +38,90 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     if let Some(addr) = addr {
-        use rouille::{start_server, try_or_400, Request, Response};
+        use rand::{Rng, thread_rng};
+        use rouille::{Server, try_or_400, Request, Response};
+        use std::sync::{Arc, Mutex};
 
         tracing::info!("got addr {addr:?}");
 
+        let auth_state_key = thread_rng().gen::<u128>();
+
+        #[derive(Debug, Default)]
+        struct AuthState {
+            user_token: String,
+            // TODO? replace these bools with an enum.
+            // Or are most of the 8 states valid?
+            server_running: bool,
+            can_close: bool,
+            is_closed: bool,
+        }
+
+        let mut auth_state: Arc<Mutex<AuthState>> = Arc::new(
+            Mutex::new(
+                AuthState::default()
+            )
+        );
+
         // Start webserver in background thread
-        tokio::spawn(async move {
-            tracing::info!("starting server at {addr:?}");
+        {
+            let auth_state = Arc::clone(&auth_state);
+            let auth = Arc::clone(&auth_state);
+            tokio::spawn(async move {
+                tracing::info!("starting server at {addr:?}");
 
-            start_server(addr, move |request| {
-                tracing::info!("{request:?}");
+                let server = Server::new(addr, move |request| {
+                    tracing::info!("{request:?}");
 
-                Response::text(format!("{request:?}")).with_status_code(501)
-            })
-        });
-    
+                    if Some(auth_state_key.to_string()) == request.get_param("state") {
+                        return Response::text("Invalid state!".to_string())
+                            .with_status_code(401);
+                    }
 
-        // TODO Have webserver check incoming twitch state and print user token
-        // TODO Have webserver set user token where it can be retrieved in this thread
-        // TODO Sleep until webserver starts up (or maybe just `await`?)
+                    if let Some(user_token) = request.get_param("code") {
+                        tracing::info!("user_token: {user_token:?}");
+                        auth.lock().expect("should not be poisoned").user_token = user_token;
+                        let document: &str = r#"<!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <style type="text/css">body{
+        margin:40px auto;
+        max-width:650px;
+        line-height:1.6;
+        font-size:18px;
+        color:#888;
+        background-color:#111;
+        padding:0 10px
+        }
+        h1{line-height:1.2}
+        </style>
+        <title>'ardly OAuth</title>
+    </head>
+    <body>
+        <h1>Thanks for Authenticating with 'ardly OAuth!</h1>
+    You may now close this page.
+    </body>
+    </html>"#;
+                        Response::html("must provide code")
+                    } else {
+                        Response::text("must provide code").with_status_code(400)
+                    }
+                });
+                let auth = Arc::clone(&auth_state);
+                auth.lock().expect("should not be poisoned").server_running = true;
+                server.expect("server startup error:").run();
+            });
+        }
+
+        let auth = Arc::clone(&auth_state);
+
+        let sleep_duration = std::time::Duration::from_millis(16);
+
+        while !auth.lock().expect("should not be poisoned").server_running {
+            std::thread::sleep(sleep_duration);
+        }
+        tracing::info!("Done waiting for server to start.");
+
         // TODO Open twitch authorize URL in web browser, with redirect url to local webserver
         // TODO Sleep until webserver sets user token
         // TODO Post to twitch token endpoint with user token
