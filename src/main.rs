@@ -1,3 +1,5 @@
+#![deny(unused_must_use)]
+
 use twitch_irc::{
     ClientConfig,
     SecureTCPTransport,
@@ -7,6 +9,7 @@ use twitch_irc::{
 };
 
 use std::net::{SocketAddr, ToSocketAddrs};
+use url::Url;
 
 #[tokio::main]
 pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,17 +25,31 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or_else(|| "Login name is required as second arg")?;
 
     // TODO Once we can get the token ourselves, accept either token, or required info to get token
+    // Somethig like --token <token>
+    // Somethig like --get_token <app ID> [local addr]
     let oauth_token = args.next()
         .ok_or_else(|| "OAuth token is required as third arg")?;
 
-    let addr = if let Some(addr_str) = args.next() {
-        if let Some(addr) = first_addr(&addr_str) {
-            Some(addr)
+    let app_id = args.next()
+        .ok_or_else(|| "App ID is (currently) required as fourth arg")?;
+
+    let app_secret = args.next()
+        .ok_or_else(|| "App Secret is (currently) required as fifth arg")?;
+
+    let (addr, addr_string) = if let Some(addr_str) = args.next() {
+        fn first_addr(to_addrs: impl ToSocketAddrs) -> Option<SocketAddr> {
+            to_addrs.to_socket_addrs().ok()?.next()
+        }
+
+        let addr_vec = Url::parse(&addr_str)?.socket_addrs(|| None)?;
+
+        if let Some(addr) = first_addr(&*addr_vec) {
+            (Some(addr), addr_str)
         } else {
-            first_addr((addr_str, 8080))
+            (first_addr((addr_str.as_str(), 8080)), addr_str)
         }
     } else {
-        None
+        (None, "".to_string())
     };
 
     tracing_subscriber::fmt::init();
@@ -72,7 +89,12 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let server = Server::new(addr, move |request| {
                     tracing::info!("{request:?}");
 
-                    if Some(auth_state_key.to_string()) == request.get_param("state") {
+                    let expected = auth_state_key.to_string();
+                    let actual = request.get_param("state");
+
+                    if Some(expected) != actual {
+                        let expected = auth_state_key.to_string();
+                        tracing::info!("{expected} != {actual:?}");
                         return Response::text("Invalid state!".to_string())
                             .with_status_code(401);
                     }
@@ -102,7 +124,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     You may now close this page.
     </body>
     </html>"#;
-                        Response::html("must provide code")
+                        Response::html(document)
                     } else {
                         Response::text("must provide code").with_status_code(400)
                     }
@@ -122,8 +144,34 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         tracing::info!("Done waiting for server to start.");
 
-        // TODO Open twitch authorize URL in web browser, with redirect url to local webserver
-        // TODO Sleep until webserver sets user token
+        const TWITCH_AUTH_BASE_URL: &str = "https://id.twitch.tv/oauth2/";
+
+        let auth_state_key_string = auth_state_key.to_string();
+
+        let mut auth_url = Url::parse(
+            TWITCH_AUTH_BASE_URL
+        )?;
+        auth_url = auth_url.join("authorize")?;
+        auth_url.query_pairs_mut()
+            .append_pair("client_id", &app_id)
+            .append_pair("redirect_uri", &addr_string)
+            .append_pair("response_type", "code")
+            .append_pair("scope", "chat:read chat:edit")
+            .append_pair("force_verify", "true")
+            .append_pair("state", &auth_state_key_string)
+            ;
+
+        tracing::info!("{}", auth_url.as_str());
+
+        webbrowser::open(auth_url.as_str())?;
+
+        tracing::info!("Waiting for auth confirmation.");
+
+        while auth.lock().expect("should not be poisoned").user_token.is_empty() {
+            std::thread::sleep(sleep_duration);
+        }
+        tracing::info!("Done waiting for auth confirmation.");
+
         // TODO Post to twitch token endpoint with user token
         // TODO Pass access token from twitch token endpoint response instead of one passed on CLI
     } else {
@@ -212,10 +260,6 @@ async fn start_bot(
     join_handle.await?;
 
     Ok(())
-}
-
-fn first_addr(to_addrs: impl ToSocketAddrs) -> Option<SocketAddr> {
-    to_addrs.to_socket_addrs().ok()?.next()
 }
 
 mod ardly_bot {
