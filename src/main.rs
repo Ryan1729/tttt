@@ -11,8 +11,12 @@ use twitch_irc::{
 use std::net::{SocketAddr, ToSocketAddrs};
 use url::Url;
 
+type Res<A> = Result<A, Box<dyn std::error::Error>>;
+
+const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(16);
+
 #[tokio::main]
-pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn main() -> Res<()> {
     let mut args = std::env::args();
 
     args.next(); //exe name
@@ -27,7 +31,7 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // TODO Once we can get the token ourselves, accept either token, or required info to get token
     // Somethig like --token <token>
     // Somethig like --get_token <app ID> [local addr]
-    let oauth_token = args.next()
+    let mut oauth_token = args.next()
         .ok_or_else(|| "OAuth token is required as third arg")?;
 
     let app_id = args.next()
@@ -55,125 +59,12 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     if let Some(addr) = addr {
-        use rand::{Rng, thread_rng};
-        use rouille::{Server, try_or_400, Request, Response};
-        use std::sync::{Arc, Mutex};
-
-        tracing::info!("got addr {addr:?}");
-
-        let auth_state_key = thread_rng().gen::<u128>();
-
-        #[derive(Debug, Default)]
-        struct AuthState {
-            user_token: String,
-            // TODO? replace these bools with an enum.
-            // Or are most of the 8 states valid?
-            server_running: bool,
-            can_close: bool,
-            is_closed: bool,
-        }
-
-        let mut auth_state: Arc<Mutex<AuthState>> = Arc::new(
-            Mutex::new(
-                AuthState::default()
-            )
-        );
-
-        // Start webserver in background thread
-        {
-            let auth_state = Arc::clone(&auth_state);
-            let auth = Arc::clone(&auth_state);
-            tokio::spawn(async move {
-                tracing::info!("starting server at {addr:?}");
-
-                let server = Server::new(addr, move |request| {
-                    tracing::info!("{request:?}");
-
-                    let expected = auth_state_key.to_string();
-                    let actual = request.get_param("state");
-
-                    if Some(expected) != actual {
-                        let expected = auth_state_key.to_string();
-                        tracing::info!("{expected} != {actual:?}");
-                        return Response::text("Invalid state!".to_string())
-                            .with_status_code(401);
-                    }
-
-                    if let Some(user_token) = request.get_param("code") {
-                        tracing::info!("user_token: {user_token:?}");
-                        auth.lock().expect("should not be poisoned").user_token = user_token;
-                        let document: &str = r#"<!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <style type="text/css">body{
-        margin:40px auto;
-        max-width:650px;
-        line-height:1.6;
-        font-size:18px;
-        color:#888;
-        background-color:#111;
-        padding:0 10px
-        }
-        h1{line-height:1.2}
-        </style>
-        <title>'ardly OAuth</title>
-    </head>
-    <body>
-        <h1>Thanks for Authenticating with 'ardly OAuth!</h1>
-    You may now close this page.
-    </body>
-    </html>"#;
-                        Response::html(document)
-                    } else {
-                        Response::text("must provide code").with_status_code(400)
-                    }
-                });
-                let auth = Arc::clone(&auth_state);
-                auth.lock().expect("should not be poisoned").server_running = true;
-                server.expect("server startup error:").run();
-            });
-        }
-
-        let auth = Arc::clone(&auth_state);
-
-        let sleep_duration = std::time::Duration::from_millis(16);
-
-        while !auth.lock().expect("should not be poisoned").server_running {
-            std::thread::sleep(sleep_duration);
-        }
-        tracing::info!("Done waiting for server to start.");
-
-        const TWITCH_AUTH_BASE_URL: &str = "https://id.twitch.tv/oauth2/";
-
-        let auth_state_key_string = auth_state_key.to_string();
-
-        let mut auth_url = Url::parse(
-            TWITCH_AUTH_BASE_URL
-        )?;
-        auth_url = auth_url.join("authorize")?;
-        auth_url.query_pairs_mut()
-            .append_pair("client_id", &app_id)
-            .append_pair("redirect_uri", &addr_string)
-            .append_pair("response_type", "code")
-            .append_pair("scope", "chat:read chat:edit")
-            .append_pair("force_verify", "true")
-            .append_pair("state", &auth_state_key_string)
-            ;
-
-        tracing::info!("{}", auth_url.as_str());
-
-        webbrowser::open(auth_url.as_str())?;
-
-        tracing::info!("Waiting for auth confirmation.");
-
-        while auth.lock().expect("should not be poisoned").user_token.is_empty() {
-            std::thread::sleep(sleep_duration);
-        }
-        tracing::info!("Done waiting for auth confirmation.");
-
-        // TODO Post to twitch token endpoint with user token
-        // TODO Pass access token from twitch token endpoint response instead of one passed on CLI
+        oauth_token = authorize(AuthSpec {
+            addr,
+            addr_string,
+            app_id,
+            app_secret,
+        })?;
     } else {
         tracing::info!("Got no server address. Not starting auth server.");
     }
@@ -183,6 +74,189 @@ pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
         login_name,
         oauth_token,
     }).await
+}
+
+struct AuthSpec {
+    addr: SocketAddr,
+    /// The original string passed by the user
+    addr_string: String,
+    app_id: String,
+    app_secret: String,
+}
+
+fn authorize(AuthSpec {
+    addr,
+    addr_string,
+    app_id,
+    app_secret,
+}: AuthSpec) -> Res<String> {
+
+    use rand::{Rng, thread_rng};
+    use rouille::{Server, try_or_400, Request, Response};
+    use std::sync::{Arc, Mutex};
+
+    tracing::info!("got addr {addr:?}");
+
+    let auth_state_key = thread_rng().gen::<u128>();
+
+    #[derive(Debug, Default)]
+    struct AuthState {
+        user_token: String,
+        // TODO? replace these bools with an enum.
+        // Or are most of the 8 states valid?
+        server_running: bool,
+        can_close: bool,
+        is_closed: bool,
+    }
+
+    let mut auth_state: Arc<Mutex<AuthState>> = Arc::new(
+        Mutex::new(
+            AuthState::default()
+        )
+    );
+
+    // Start webserver in background thread
+    {
+        let auth_state = Arc::clone(&auth_state);
+        let auth = Arc::clone(&auth_state);
+        tokio::spawn(async move {
+            tracing::info!("starting server at {addr:?}");
+
+            let server = Server::new(addr, move |request| {
+                tracing::info!("{request:?}");
+
+                let expected = auth_state_key.to_string();
+                let actual = request.get_param("state");
+
+                if Some(expected) != actual {
+                    let expected = auth_state_key.to_string();
+                    tracing::info!("{expected} != {actual:?}");
+                    return Response::text("Invalid state!".to_string())
+                        .with_status_code(401);
+                }
+
+                if let Some(user_token) = request.get_param("code") {
+                    tracing::info!("user_token: {user_token:?}");
+                    auth.lock().expect("should not be poisoned").user_token = user_token;
+                    let document: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <style type="text/css">body{
+    margin:40px auto;
+    max-width:650px;
+    line-height:1.6;
+    font-size:18px;
+    color:#888;
+    background-color:#111;
+    padding:0 10px
+    }
+    h1{line-height:1.2}
+    </style>
+    <title>'ardly OAuth</title>
+</head>
+<body>
+    <h1>Thanks for Authenticating with 'ardly OAuth!</h1>
+You may now close this page.
+</body>
+</html>"#;
+                    Response::html(document)
+                } else {
+                    Response::text("must provide code").with_status_code(400)
+                }
+            });
+            let auth = Arc::clone(&auth_state);
+            auth.lock().expect("should not be poisoned").server_running = true;
+            let server = server.expect("server startup error:");
+
+            while !auth.lock().expect("should not be poisoned").can_close {
+                server.poll();
+                std::thread::sleep(SLEEP_DURATION);
+            }
+
+            auth.lock().expect("should not be poisoned").is_closed = true;
+        });
+    }
+
+    let auth = Arc::clone(&auth_state);
+
+    while !auth.lock().expect("should not be poisoned").server_running {
+        std::thread::sleep(SLEEP_DURATION);
+    }
+    tracing::info!("Done waiting for server to start.");
+
+    const TWITCH_AUTH_BASE_URL: &str = "https://id.twitch.tv/oauth2/";
+
+    let auth_state_key_string = auth_state_key.to_string();
+
+    let mut auth_url = Url::parse(
+        TWITCH_AUTH_BASE_URL
+    )?;
+    auth_url = auth_url.join("authorize")?;
+    auth_url.query_pairs_mut()
+        .append_pair("client_id", &app_id)
+        .append_pair("redirect_uri", &addr_string)
+        .append_pair("response_type", "code")
+        .append_pair("scope", "chat:read chat:edit")
+        .append_pair("force_verify", "true")
+        .append_pair("state", &auth_state_key_string)
+        ;
+
+    tracing::info!("{}", auth_url.as_str());
+
+    webbrowser::open(auth_url.as_str())?;
+
+    tracing::info!("Waiting for auth confirmation.");
+
+    while auth.lock().expect("should not be poisoned").user_token.is_empty() {
+        std::thread::sleep(SLEEP_DURATION);
+    }
+    tracing::info!("Done waiting for auth confirmation.");
+
+    let user_token = auth.lock().expect("should not be poisoned").user_token.clone();
+
+    let mut token_url = Url::parse(
+        TWITCH_AUTH_BASE_URL
+    )?;
+    token_url = token_url.join("token")?;
+    token_url.query_pairs_mut()
+        .append_pair("client_id", &app_id)
+        .append_pair("client_secret", &app_secret)
+        .append_pair("redirect_uri", &addr_string)
+        .append_pair("code", &user_token)
+        .append_pair("grant_type", "authorization_code")
+        ;
+
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        access_token: String,
+        refresh_token: String,
+    }
+
+    let Resp {
+        access_token,
+        refresh_token,
+    }: Resp = ureq::post(token_url.as_str())
+        .call()?
+        .into_json::<Resp>()?;
+
+    auth.lock().expect("should not be poisoned").can_close = true;
+
+    tracing::info!("Waiting for server to close.");
+    while !auth.lock().expect("should not be poisoned").is_closed {
+        std::thread::sleep(SLEEP_DURATION);
+    }
+    tracing::info!("Done waiting for server to close.");
+
+    if access_token.is_empty() {
+        return Err("access_token was empty!".into());
+    }
+
+    tracing::info!("access_token: {access_token}");
+    // TODO? use refresh token after a while?
+    tracing::info!("refresh_token: {refresh_token}");
+
+    Ok(access_token)
 }
 
 struct BotSpec {
@@ -197,7 +271,7 @@ async fn start_bot(
         login_name,
         oauth_token,
     }: BotSpec
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Res<()> {
     tracing::info!("Attempting to connect to {channel_names:?} as {login_name}");
 
     // default configuration is to join chat as anonymous.
