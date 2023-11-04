@@ -65,11 +65,22 @@ pub fn response(mut input: String) -> Option<String> {
 
     let mut best_word = best_word.to_owned();
 
-    if // For example, "collid-er"
+    if (
+       // For example, collid-er => collide 'er
        best_word.ends_with("id")
-    || // For example, "bon-er"
-       best_word.ends_with("id")
-    || (
+       && !(
+           // but also raid-er => raid 'er
+           best_word.ends_with("aid")
+           // Do these occur in English besides borrowed words where the joke
+           // doesn't work anyway? {
+           //|| best_word.ends_with("eid")
+           //|| best_word.ends_with("iid")
+           // }
+           || best_word.ends_with("oid")
+           // but also guid-er => guide 'er
+           //|| best_word.ends_with("uid")
+       )
+    ) || (
         // pok-er => poke 'er
         best_word.ends_with("ok")
         // but, book-er => book 'er
@@ -105,4 +116,9 @@ fn response_works_on_these_examples() {
     a!("I'm gonna work as a present wrapper", Some("Like in a blanket? Is she cold?"));
     a!("PaRappa the Rappa", Some("Kick, punch, block, it's all in the mind."));
     a!("They turned on the radio jammer", Some("Um Jammer Lammy? My guitar is in my mind!"));
+    a!("raider", Some("raid 'er? I 'ardly know 'er!"));
+    a!("avoider", Some("avoid 'er? I 'ardly know 'er!"));
+    // If this test is making things complicated, consider removing it, since this
+    // is a rarely used word.
+    a!("guider", Some("guide 'er? I 'ardly know 'er!"));
 }

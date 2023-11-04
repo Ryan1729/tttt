@@ -88,7 +88,7 @@ fn authorize(AuthSpec {
         is_closed: bool,
     }
 
-    let mut auth_state: Arc<Mutex<AuthState>> = Arc::new(
+    let auth_state: Arc<Mutex<AuthState>> = Arc::new(
         Mutex::new(
             AuthState::default()
         )
