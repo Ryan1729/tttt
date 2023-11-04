@@ -15,3 +15,4 @@ twitch-irc = "5.0"
 ureq = { version = "2.8", features = ["json"] }
 url = "2.4.1"
 webbrowser = "0.8"
+xflags = "0.3.1"

@@ -8,80 +8,59 @@ use twitch_irc::{
     message::ServerMessage,
 };
 
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr};
 use url::Url;
+
+mod ardly_bot;
+mod flags;
 
 type Res<A> = Result<A, Box<dyn std::error::Error>>;
 
 const SLEEP_DURATION: std::time::Duration = std::time::Duration::from_millis(16);
 
-#[tokio::main]
-pub async fn main() -> Res<()> {
-    let mut args = std::env::args();
+pub type Token = String;
 
-    args.next(); //exe name
-
-    // TODO allow muliple channel names
-    let channel_name = args.next()
-        .ok_or_else(|| "Channel name is required as first arg")?;
-
-    let login_name = args.next()
-        .ok_or_else(|| "Login name is required as second arg")?;
-
-    // TODO Once we can get the token ourselves, accept either token, or required info to get token
-    // Somethig like --token <token>
-    // Somethig like --get_token <app ID> [local addr]
-    let mut oauth_token = args.next()
-        .ok_or_else(|| "OAuth token is required as third arg")?;
-
-    let app_id = args.next()
-        .ok_or_else(|| "App ID is (currently) required as fourth arg")?;
-
-    let app_secret = args.next()
-        .ok_or_else(|| "App Secret is (currently) required as fifth arg")?;
-
-    let (addr, addr_string) = if let Some(addr_str) = args.next() {
-        fn first_addr(to_addrs: impl ToSocketAddrs) -> Option<SocketAddr> {
-            to_addrs.to_socket_addrs().ok()?.next()
-        }
-
-        let addr_vec = Url::parse(&addr_str)?.socket_addrs(|| None)?;
-
-        if let Some(addr) = first_addr(&*addr_vec) {
-            (Some(addr), addr_str)
-        } else {
-            (first_addr((addr_str.as_str(), 8080)), addr_str)
-        }
-    } else {
-        (None, "".to_string())
-    };
-
-    tracing_subscriber::fmt::init();
-
-    if let Some(addr) = addr {
-        oauth_token = authorize(AuthSpec {
-            addr,
-            addr_string,
-            app_id,
-            app_secret,
-        })?;
-    } else {
-        tracing::info!("Got no server address. Not starting auth server.");
-    }
-
-    start_bot(BotSpec {
-        channel_names: vec![channel_name],
-        login_name,
-        oauth_token,
-    }).await
+pub enum SpecKind {
+    Token(Token),
+    Auth(AuthSpec)
 }
 
-struct AuthSpec {
+pub struct Spec {
+    pub channel_names: Vec<String>,
+    pub login_name: String,
+    pub kind: SpecKind,
+}
+
+pub struct AuthSpec {
     addr: SocketAddr,
     /// The original string passed by the user
     addr_string: String,
     app_id: String,
     app_secret: String,
+}
+
+#[tokio::main]
+pub async fn main() -> Res<()> {
+    let args = flags::Args::from_env()?;
+
+    let Spec {
+        channel_names,
+        login_name,
+        kind,
+    } = args.to_spec()?;
+
+    tracing_subscriber::fmt::init();
+
+    let oauth_token = match kind {
+        SpecKind::Auth(auth_spec) => authorize(auth_spec)?,
+        SpecKind::Token(token) => token,
+    };
+
+    start_bot(BotSpec {
+        channel_names,
+        login_name,
+        oauth_token,
+    }).await
 }
 
 fn authorize(AuthSpec {
@@ -92,7 +71,7 @@ fn authorize(AuthSpec {
 }: AuthSpec) -> Res<String> {
 
     use rand::{Rng, thread_rng};
-    use rouille::{Server, try_or_400, Request, Response};
+    use rouille::{Server, Response};
     use std::sync::{Arc, Mutex};
 
     tracing::info!("got addr {addr:?}");
@@ -334,115 +313,4 @@ async fn start_bot(
     join_handle.await?;
 
     Ok(())
-}
-
-mod ardly_bot {
-    use regex::Regex;
-
-    pub fn response(mut input: String) -> Option<String> {
-        input.make_ascii_lowercase();
-
-        // avoid self replies
-        if input.contains("know 'er") {
-            return None;
-        }
-
-        if input.contains("liquor")
-        || input.contains("liqueur") {
-            return Some("lick 'er? I 'ardly know 'er!".to_owned());
-        }
-
-        if input.contains("parappa")
-        || input.contains("rappa") {
-            return Some("Kick, punch, block, it's all in the mind.".to_owned());
-        }
-
-        // TODO make this a lazy static.
-        let er_regex = Regex::new(r"(\P{White_Space}+)er(s|ed|ing)?(\p{White_Space}|[\.!?,]|$)").unwrap();
-
-        let mut best_word = "";
-        for captures in er_regex.captures_iter(&input) {
-            // 0 is the whole match
-            let Some(mut erless_word) = captures.get(1).map(|c| c.as_str()) else {
-                continue
-            };
-
-            // This seems easier than changing the regex to handle "ererer"
-            while erless_word.ends_with("er") {
-                erless_word = &erless_word[0..erless_word.len() - 2];
-            }
-
-            // TODO? Better bestness criteria?
-            if best_word.len() <= erless_word.len() {
-                best_word = erless_word;
-            }
-        }
-
-        if best_word.is_empty() {
-            return None;
-        }
-
-        if best_word == "rap" {
-            return Some("No means no.".to_owned());
-        }
-
-        if best_word == "rapp" {
-            return Some("What is this? Friday Night Funkin'?".to_owned());
-        }
-
-        if best_word == "wrapp" {
-            return Some("Like in a blanket? Is she cold?".to_owned());
-        }
-
-        if best_word == "jamm" {
-            return Some("Um Jammer Lammy? My guitar is in my mind!".to_owned());
-        }
-
-        if best_word == "bon" {
-            return Some("I'd rather leave 'er bones where they are.".to_owned());
-        }
-
-        let mut best_word = best_word.to_owned();
-
-        if // For example, "collid-er"
-           best_word.ends_with("id")
-        || // For example, "bon-er"
-           best_word.ends_with("id")
-        || (
-            // pok-er => poke 'er
-            best_word.ends_with("ok")
-            // but, book-er => book 'er
-            && !best_word.ends_with("ook")
-        )
-        {
-            best_word.push('e');
-        }
-
-        best_word.push_str(" 'er? I 'ardly know 'er!");
-
-        Some(best_word)
-    }
-
-    #[test]
-    fn response_works_on_these_examples() {
-        macro_rules! a {
-            ($input: literal, $expected: expr) => {
-                let expected: Option<&str> = $expected;
-                let expected: Option<String> = expected.map(|s| s.to_owned());
-                assert_eq!(response($input.to_owned()), expected);
-            }
-        }
-        a!("", None);
-        a!("booker", Some("book 'er? I 'ardly know 'er!"));
-        a!("liquor", Some("lick 'er? I 'ardly know 'er!"));
-        a!("Large Hadron Collider", Some("collide 'er? I 'ardly know 'er!"));
-        a!("cupholder", Some("cuphold 'er? I 'ardly know 'er!"));
-        a!("poker", Some("poke 'er? I 'ardly know 'er!"));
-        a!("hand me the fish boner", Some("I'd rather leave 'er bones where they are."));
-        a!("raper", Some("No means no."));
-        a!("rapper", Some("What is this? Friday Night Funkin'?"));
-        a!("I'm gonna work as a present wrapper", Some("Like in a blanket? Is she cold?"));
-        a!("PaRappa the Rappa", Some("Kick, punch, block, it's all in the mind."));
-        a!("They turned on the radio jammer", Some("Um Jammer Lammy? My guitar is in my mind!"));
-    }
 }
