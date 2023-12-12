@@ -8,10 +8,12 @@ use twitch_irc::{
     message::ServerMessage,
 };
 
-use std::net::{SocketAddr};
+use std::{
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
+    time::{Duration}
+};
 use url::Url;
 
-mod ardly_bot;
 mod flags;
 
 type Res<A> = Result<A, Box<dyn std::error::Error>>;
@@ -60,6 +62,7 @@ pub async fn main() -> Res<()> {
         channel_names,
         login_name,
         oauth_token,
+        tcp_port: 44444, // TODO take as param
     }).await
 }
 
@@ -132,10 +135,10 @@ fn authorize(AuthSpec {
     }
     h1{line-height:1.2}
     </style>
-    <title>'ardly OAuth</title>
+    <title>TTTT OAuth</title>
 </head>
 <body>
-    <h1>Thanks for Authenticating with 'ardly OAuth!</h1>
+    <h1>Thanks for Authenticating with TTTT OAuth!</h1>
 You may now close this page.
 </body>
 </html>"#;
@@ -238,10 +241,13 @@ You may now close this page.
     Ok(access_token)
 }
 
+type Port = u16;
+
 struct BotSpec {
     channel_names: Vec<String>,
     login_name: String,
     oauth_token: String,
+    tcp_port: Port,
 }
 
 async fn start_bot(
@@ -249,8 +255,26 @@ async fn start_bot(
         channel_names,
         login_name,
         oauth_token,
+        tcp_port,
     }: BotSpec
 ) -> Res<()> {
+    // TODO? Make configurable?
+    const TCP_TIMEOUT: Duration = Duration::from_secs(2);
+
+    let tcp_addr_string = format!("localhost:{tcp_port}");
+
+    tracing::info!("Attempting to connect to {tcp_addr_string} over TCP");
+
+    let tcp_addr = tcp_addr_string.to_socket_addrs()?
+        .next()
+        .ok_or_else(|| "Bad tcp_addr")?;
+
+    let mut stream_result = TcpStream::connect_timeout(&tcp_addr, TCP_TIMEOUT);
+
+    if let Err(ref err) = &stream_result {
+        tracing::error!("TCP error (will try again later): {err}");
+    }
+
     tracing::info!("Attempting to connect to {channel_names:?} as {login_name}");
 
     // default configuration is to join chat as anonymous.
@@ -280,18 +304,46 @@ async fn start_bot(
                     Privmsg(message) => {
                         tracing::info!("Received Privmsg");
 
-                        if let Some(response) = ardly_bot::response(
-                            message.message_text.clone()
-                        ) {
-                            let reply_result = client.say_in_reply_to(
-                                &message,
-                                format!("'ardly-bot sez: {}", &response),
-                            ).await;
+                        if stream_result.is_err() {
+                            tracing::info!("Attempting to connect to {tcp_addr_string} over TCP");
+                            stream_result = TcpStream::connect_timeout(&tcp_addr, TCP_TIMEOUT);
+                        } else {
+                            tracing::info!("Sweet! We apparently have a stream!");
+                        }
 
-                            if let Err(err) = reply_result {
-                                tracing::error!("say_in_reply_to error: {err}");
-                            } else {
-                                tracing::info!("Replied with \"{response}\"!");
+                        match stream_result {
+                            Ok(ref mut stream) => {
+                                tracing::info!("Ok(ref stream)");
+
+                                // TODO? Only send ASCII?
+                                // TODO? Avoid allocations by splitting after \n?
+                                for line in message.message_text.lines()
+                                    .map(|unterminated| format!("{unterminated}\n")) {
+                                    use std::io::Write;
+
+                                    match stream.write(line.as_bytes()) {
+                                        Ok(wrote_bytes) => {
+                                            let response = format!("Wrote {wrote_bytes} bytes.");
+    
+                                            let reply_result = client.say_in_reply_to(
+                                                &message,
+                                                response.clone(),
+                                            ).await;
+                
+                                            if let Err(err) = reply_result {
+                                                tracing::error!("say_in_reply_to error: {err}");
+                                            } else {
+                                                tracing::info!("Replied with \"{response}\"!");
+                                            }
+                                        },
+                                        Err(err) => {
+                                            tracing::error!("stream.write error: {err}");
+                                        }
+                                    }
+                                }
+                            },
+                            Err(ref err) => {
+                                tracing::error!("TCP bind error (will try again next message): {err}");
                             }
                         }
                     }

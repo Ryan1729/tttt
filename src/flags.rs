@@ -6,7 +6,7 @@ use crate::{AuthSpec, Spec, SpecKind};
 
 xflags::xflags! {
     cmd args {
-        // The bot's login
+        /// The bot's login
         required login_name: String
         repeated --channel name: String
         cmd token {

@@ -63,24 +63,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ardly-bot"
-version = "0.1.0"
-dependencies = [
- "rand",
- "regex",
- "rouille",
- "serde",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "twitch-irc",
- "ureq",
- "url",
- "webbrowser",
- "xflags",
-]
-
-[[package]]
 name = "ascii"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1323,6 +1305,24 @@ dependencies = [
  "thread_local",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "tttt"
+version = "0.1.0"
+dependencies = [
+ "rand",
+ "regex",
+ "rouille",
+ "serde",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "twitch-irc",
+ "ureq",
+ "url",
+ "webbrowser",
+ "xflags",
 ]
 
 [[package]]
