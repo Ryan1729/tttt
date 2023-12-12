@@ -311,6 +311,14 @@ async fn start_bot(
                             tracing::info!("Sweet! We apparently have a stream!");
                         }
 
+                        let mut new_stream_result_is_new = false;
+                        let mut new_stream_result = Err(
+                            std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                "new_stream_result was untouched!"
+                            )
+                        );
+
                         match stream_result {
                             Ok(ref mut stream) => {
                                 tracing::info!("Ok(ref stream)");
@@ -321,7 +329,9 @@ async fn start_bot(
                                     .map(|unterminated| format!("{unterminated}\n")) {
                                     use std::io::Write;
 
-                                    match stream.write(line.as_bytes()) {
+                                    let write_result = stream.write(line.as_bytes());
+
+                                    match write_result {
                                         Ok(wrote_bytes) => {
                                             let response = format!("Wrote {wrote_bytes} bytes.");
     
@@ -338,6 +348,9 @@ async fn start_bot(
                                         },
                                         Err(err) => {
                                             tracing::error!("stream.write error: {err}");
+                                            // TODO? Custom error that explains we're resetting to allow a reconnection?
+                                            new_stream_result = Err(err);
+                                            new_stream_result_is_new = true;
                                         }
                                     }
                                 }
@@ -345,6 +358,10 @@ async fn start_bot(
                             Err(ref err) => {
                                 tracing::error!("TCP bind error (will try again next message): {err}");
                             }
+                        }
+
+                        if new_stream_result_is_new {
+                            stream_result = new_stream_result;
                         }
                     }
                     Ping(_) | Pong(_) => {}
