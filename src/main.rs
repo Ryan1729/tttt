@@ -14,6 +14,8 @@ use std::{
 };
 use url::Url;
 
+const DEBUG_MODE: bool = cfg!(debug_assertions);
+
 mod flags;
 
 type Res<A> = Result<A, Box<dyn std::error::Error>>;
@@ -57,6 +59,8 @@ pub async fn main() -> Res<()> {
         SpecKind::Auth(auth_spec) => authorize(auth_spec)?,
         SpecKind::Token(token) => token,
     };
+
+    tracing::info!("Debug mode: {DEBUG_MODE}");
 
     start_bot(BotSpec {
         channel_names,
@@ -337,17 +341,19 @@ async fn start_bot(
 
                                     match write_result {
                                         Ok(wrote_bytes) => {
-                                            let response = format!("Wrote {wrote_bytes} bytes.");
-    
-                                            let reply_result = client.say_in_reply_to(
-                                                &message,
-                                                response.clone(),
-                                            ).await;
-                
-                                            if let Err(err) = reply_result {
-                                                tracing::error!("say_in_reply_to error: {err}");
-                                            } else {
-                                                tracing::info!("Replied with \"{response}\"!");
+                                            if DEBUG_MODE {
+                                                let response = format!("Wrote {wrote_bytes} bytes.");
+        
+                                                let reply_result = client.say_in_reply_to(
+                                                    &message,
+                                                    response.clone(),
+                                                ).await;
+                    
+                                                if let Err(err) = reply_result {
+                                                    tracing::error!("say_in_reply_to error: {err}");
+                                                } else {
+                                                    tracing::info!("Replied with \"{response}\"!");
+                                                }
                                             }
                                         },
                                         Err(err) => {
