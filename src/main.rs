@@ -323,10 +323,14 @@ async fn start_bot(
                             Ok(ref mut stream) => {
                                 tracing::info!("Ok(ref stream)");
 
+                                let label = message.sender.login.clone();
+
                                 // TODO? Only send ASCII?
                                 // TODO? Avoid allocations by splitting after \n?
                                 for line in message.message_text.lines()
-                                    .map(|unterminated| format!("{unterminated}\n")) {
+                                    .map(|unterminated| 
+                                        format!("{label}:{unterminated}\n")
+                                    ) {
                                     use std::io::Write;
 
                                     let write_result = stream.write(line.as_bytes());
